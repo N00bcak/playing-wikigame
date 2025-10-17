@@ -10,7 +10,8 @@ export NCCL_DEBUG=INFO
 N_GPUS=4
 GRADIENT_BATCH_SIZE=128
 
-yes n | python train.py \
+yes n | ./kiwix-server.sh;
+python train.py \
     --env_id game:WikiGame-v0-easy \
     --prompt_template qwen3_game \
     --wrappers concat \
