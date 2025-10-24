@@ -6,11 +6,15 @@ import json
 import logging
 import os
 import re
+import random
 from copy import deepcopy
 from dataclasses import dataclass
+from time import time
+from tqdm import tqdm
 from typing import List, Literal, Optional, Tuple
 
 import numpy as np
+import torch.distributed as dist
 import tree
 import vllm
 from oat.algorithms.ppo import PPOArgs
@@ -90,18 +94,19 @@ class Args(PPOArgs):
     whiten_adv: bool = True  # Return batch normalization
 
     # Evaluation settings
-    eval_prompt_template: Literal["qwen3_general"] = "qwen3_general"
-    eval_data: Optional[str] = "./data"
-    eval_input_key: str = "input"
-    eval_output_key: str = "answer"
-    eval_split: str = "all"
+    eval_steps: int = 32  # Evaluation interval in steps
+    eval_games: int = 16  # Number of games for evaluation
+    eval_dump_game_states:  bool = True  # Whether to dump game states during evaluation
+    # eval_data: Optional[str] = "./data"
+    # eval_input_key: str = "input"
+    # eval_output_key: str = "answer"
+    # eval_split: str = "all"
 
     # Misc settings
     dump_experience_every: int = 1  # Dump experience data
 
     # Episode collection logic
     keep_generation_failed: bool = False  # Keep episodes with generation failures
-
 
 """ +=======================================+ """
 """ 3. Defining actor to collect experiences. """
@@ -145,7 +150,12 @@ class Actor(PPOMultiTurnActor):
         # Instantiate vectorized environment.
         self.env = gem.make_vec(
             [self.args.env_id] * self.args.num_env,
-            vec_kwargs=[{"seed": self.args.seed + j} for j in range(self.args.num_env)],
+            vec_kwargs=[{"seed": self.args.seed + j, "backend": "kiwix", "trawler_kwargs": {
+                "url": "http://localhost:8080",
+                "zimfile": "wikipedia_en_simple_all_nopic_2025-09",
+                "query_delay_ms": 0,
+                "query_use_cache": True,
+            }} for j in range(self.args.num_env)],
             wrappers=wrappers,
             async_mode=self.args.async_env,
         )
@@ -281,6 +291,7 @@ class Actor(PPOMultiTurnActor):
         sub_formatted_observations = [
             o for o, e in zip(formatted_observations, exceeds_lengths) if not e
         ]
+        assert len(sub_formatted_observations) > 0, f"All observations exceed max model length. How is this possible? {formatted_observations=}"
 
         # Generate
         sub_outputs = self.generate(sub_formatted_observations, sampling_params)
@@ -321,6 +332,7 @@ class Actor(PPOMultiTurnActor):
                         "formatted_observation": formatted_observations[i],
                         "prompt_ids": prompt_token_ids,
                         "response": raw_action,
+                        "extracted_action": extracted_action,
                         "response_ids": token_ids,
                         "response_logprobs": response_logprobs,
                         "response_is_truncated": response_is_truncated,
@@ -378,7 +390,41 @@ class Actor(PPOMultiTurnActor):
             logging.error(f"Error in extract_action: {e}")
             # Return invalid action if extraction fails.
             return INVALID_ACTION
+    
+    def run_evaluate_episode(self):
+        '''
+        As with the classical RL setup, evaluate on the same environment.
 
+        Logs trajectories and statistics into a local archive and optionally
+        to WandB.
+        '''
+        rewards = []
+        trajectories = []
+        self.eval_mode = True
+        for _ in range(self.args.eval_games):
+            curr_rew = 0.0
+            curr_traj = []
+            obs, _ = self.env.reset()
+            done = False
+            while not done:
+                action, extra = self.agent_act(obs)  # type: ignore
+                obs, reward, terminated, truncated, info = self.env.step(action)
+                done = terminated | truncated
+                curr_rew += reward
+                curr_traj.append(extra.get(key, "") for key in ["formatted_observation", "response", "extracted_action"])
+            rewards.append(curr_rew)
+            trajectories.append(curr_traj)
+
+        # Log the evaluation results
+        self.log_evaluation_results(rewards)
+        self.eval_mode = False
+
+    def log_evaluation_results(self, rewards):
+        """
+        Log the evaluation results, including average reward and other statistics.
+        """
+        avg_reward = sum(rewards) / len(rewards) if rewards else 0
+        logging.info(f"Evaluation results - Average Reward: {avg_reward}")
 
 class DummyPromptDataset(Dataset):
     """Empty dataset to satisfy OAT's requirements without actually loading data."""
@@ -431,6 +477,88 @@ class Learner(PPOMultiTurnLearner):
             strategy.args.rollout_batch_size_per_device,
             shuffle=False,  # No need to shuffle dummy data
         )
+
+    def evaluate(self, _unused_dataloader, steps):
+        """
+        Online evaluation with hierarchical metrics.
+
+        We do three things here:
+        1) Evaluation on games, either in-domain or out-domain, against various opponents (random, rule-based, LLMs);
+        2) Evaluation on general reasoning tasks, including math, etc.
+        """
+        del _unused_dataloader
+        assert not self.pi_beta_lags_behind, "pi beta lags behind for evaluation"
+        self._pre_evaluate()
+
+        self.strategy.print(f"Start evaluating on games at step {steps}")
+
+        # 1) Game eval.
+        t0 = time.time()
+        # ------------------------------------------------------------------
+        # Initialize metrics tracking
+        # ------------------------------------------------------------------
+        # For now we are only playing one game.
+        # In future we can extend to multiple games by passing a list of env_ids.
+        eval_env_ids = [self.args.env_id]
+
+        # ------------------------------------------------------------------
+        # Rank 0 distributes evaluation workloads to all ranks then collects and populates metrics
+        # ------------------------------------------------------------------
+        if self.strategy.is_rank_0():
+            total_games = self.args.eval_games
+
+            # Generate evaluation runs
+            eval_runs_list = []
+            for env_id in eval_env_ids:
+                for game_nr in range(total_games):
+                    eval_runs_list.append((env_id, game_nr))
+
+            # Run evaluation
+            futs = []
+            game_stats = {}
+            progress_bar = tqdm(range(len(eval_runs_list)), desc="Evaluating")
+            random.shuffle(eval_runs_list)
+
+            for i, (env_id, game_nr) in enumerate(eval_runs_list):
+                actor = self.actors[i % len(self.actors)]
+                futs.append(actor.futures.run_eval_episode(env_id))
+
+                # Process results in batches
+                if len(futs) == len(self.actors) or i == len(eval_runs_list) - 1:
+                    for fut in futs:
+                        result, game_history = fut.result()
+                        game_stats[game_nr] = {
+                            'metadata': {
+                                'env_id': env_id,
+                                'game_nr': game_nr,
+                            },
+                            'metrics': result,
+                            'history': game_history,
+                        }
+                        progress_bar.update(1)
+
+                    futs.clear()
+
+            if self.args.eval_dump_game_states:
+
+                eval_results_dir = os.path.join(
+                    self.save_path, "eval_results",
+                )
+
+                os.makedirs(eval_results_dir, exist_ok = True)
+
+                eval_results_path = os.path.join(
+                    eval_results_dir,
+                    f"{steps}_eval_game.json",
+                )
+
+                json.dump(
+                    game_stats,
+                    open(eval_results_path, "w"),
+                    indent=4,
+                )
+
+        dist.barrier()
 
 
 def train(args: Args):

@@ -1,8 +1,17 @@
 # playing-wikigame
 Using Language Models to play the Wikipedia Game
 
+## Getting Started
+Unlike most other python projects, this project does **NOT** use `requirements.txt` for dependency management.
 
+This is because the libraries used by this project don't quite play nicely together,
+and manually specifying the order of operations within a script makes for a much smoother installation experience.
 
+Steps to set up the environment:
+1. Install Python 3.10 (for now, only 3.10 is supported)
+2. Create a new virtual environment using `python -m venv <env_name>`
+3. Activate the virtual environment using `source <env_name>/bin/activate`
+4. Run `./handle-dependencies.sh` to install all dependencies
 
 ```
 Copyright 2025 AxonRL Team. All Rights Reserved.

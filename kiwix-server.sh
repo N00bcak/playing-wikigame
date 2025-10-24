@@ -14,7 +14,11 @@ NC='\033[0m' # No Color
 DEFAULT_LANGUAGE="en"
 DEFAULT_VARIANT="nopic"
 KIWIX_PORT=8080
+# More threads = Faster serving.
+# Ultimately bandwidth-bound though :P
+KIWIX_THREADS=16
 DOWNLOAD_URL="https://download.kiwix.org/zim/wikipedia"
+WIKIPEDIA_PATH="$HOME/bcy/wikipedia"
 
 # Function to print colored messages
 print_info() {
@@ -83,7 +87,7 @@ show_options_info() {
     print_info "=== Wikipedia Language Options ==="
     echo "  Common languages:"
     echo "    en         - English (full Wikipedia, ~50GB nopic, ~100GB maxi)"
-    echo "    simple     - Simple English (easier vocabulary, ~1GB nopic)"
+    echo "    en_simple     - Simple English (easier vocabulary, ~1GB nopic)"
     echo "    fr         - French"
     echo "    de         - German"
     echo "    es         - Spanish"
@@ -135,10 +139,10 @@ get_latest_zim_filename() {
 # Function to download the ZIM file
 download_zim() {
     local zim_filename="$1"
-    local zim_path="$HOME/wikipedia/$zim_filename"
+    local zim_path="$WIKIPEDIA_PATH/$zim_filename"
     
     # Create directory if it doesn't exist
-    mkdir -p "$HOME/wikipedia"
+    mkdir -p "$WIKIPEDIA_PATH"
     
     # Check if file already exists
     if [ -f "$zim_path" ]; then
@@ -225,30 +229,38 @@ download_setup() {
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         zim_path=$(download_zim "$zim_filename")
     else
-        zim_path="$HOME/wikipedia/$zim_filename"
+        zim_path="$WIKIPEDIA_PATH/$zim_filename"
         print_warning "Skipping download. Make sure you have: $zim_path"
     fi
+    echo $zim_path
 }
 
 main() {
     echo ""
-    print_info "Starting Kiwix server..."
+    print_info "Starting Kiwix server... with Wikipedia ZIM file: $1"
     print_success "=== Setup Complete! ==="
     print_info "Access Wikipedia at: http://localhost:$KIWIX_PORT"
     print_info "Press Ctrl+C to stop the server"
     echo ""
     
     # Run kiwix-serve in the background
-    nohup kiwix-serve --port=$KIWIX_PORT "$zim_path" > ~/wikipedia/kiwix.log 2>&1 &
+    nohup kiwix-serve --port=$KIWIX_PORT "$1" -t $KIWIX_THREADS --address=127.0.0.1 > $WIKIPEDIA_PATH/kiwix.log 2>&1 &
     print_info "Server started in background. PID: $!"
-    print_info "View logs: tail -f ~/wikipedia/kiwix.log"
+    print_info "View logs: tail -f $WIKIPEDIA_PATH/kiwix.log"
 }
 
 echo "Do you want to download and set up a Kiwix Wikipedia ZIM file? (y/N): "
 read -n 1 -r
 echo
-if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-    download_setup
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    zim_path=$(download_setup)
+else 
+    print_info "Skipping download setup."
+    read -p "Enter the full path to your existing ZIM file: " zim_path
+    if [ ! -f "$zim_path" ]; then
+        print_error "The specified ZIM file does not exist. Exiting."
+        exit 1
+    fi
 fi
 
-main
+main "$zim_path"

@@ -1,3 +1,0 @@
-gem-llm[search]
-vllm==0.8.4
-oat
