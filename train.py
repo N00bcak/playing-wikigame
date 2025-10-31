@@ -150,12 +150,18 @@ class Actor(PPOMultiTurnActor):
         # Instantiate vectorized environment.
         self.env = gem.make_vec(
             [self.args.env_id] * self.args.num_env,
-            vec_kwargs=[{"seed": self.args.seed + j, "backend": "kiwix", "trawler_kwargs": {
-                "url": "http://localhost:8080",
-                "zimfile": "wikipedia_en_simple_all_nopic_2025-09",
-                "query_delay_ms": 0,
-                "query_use_cache": True,
-            }} for j in range(self.args.num_env)],
+            vec_kwargs=[{
+                "seed": self.args.seed + j, 
+                "backend": "kiwix", 
+                "trawler_kwargs": {
+                    "url": "http://localhost:8080",
+                    "zimfile": "wikipedia_en_simple_all_nopic_2025-09",
+                    "query_delay_ms": 0,
+                    "query_use_cache": True,
+                },
+                "page_summary_length": (2, 'sentences')
+
+            } for j in range(self.args.num_env)],
             wrappers=wrappers,
             async_mode=self.args.async_env,
         )
@@ -291,7 +297,11 @@ class Actor(PPOMultiTurnActor):
         sub_formatted_observations = [
             o for o, e in zip(formatted_observations, exceeds_lengths) if not e
         ]
-        assert len(sub_formatted_observations) > 0, f"All observations exceed max model length. How is this possible? {formatted_observations=}"
+        
+        logging.info(
+            f"Observation lengths: {[len(ids) for ids in idss]} out of {self.args.max_model_len}\n"
+            f"example: {sub_formatted_observations[0]}"
+        )
 
         # Generate
         sub_outputs = self.generate(sub_formatted_observations, sampling_params)
