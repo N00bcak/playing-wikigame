@@ -1,8 +1,16 @@
 # playing-wikigame
 Using Language Models to play the Wikipedia Game
 
-
-
+## Getting Started
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/N00bcak/playing-wikigame.git
+   cd playing-wikigame
+   ```
+2. Install the required packages from uv:
+   ```bash
+   ./handle-dependencies.sh
+   ```
 
 ```
 Copyright 2025 AxonRL Team. All Rights Reserved.
