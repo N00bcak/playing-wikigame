@@ -44,7 +44,7 @@ yes n | python train.py \
     --save_steps -1 \
     --eval_temperature 0.6 \
     --eval_top_p 0.95 \
-    --eval_generate_max_length 4096 \
+    --eval_generate_max_length 1024 \
     --max_train 65536 \
     --max_save_num 8 \
     --use-wb \
