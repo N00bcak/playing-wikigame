@@ -4,19 +4,19 @@ set -e  # Exit on error
   
 # Color codes for prettier output
 RED='\033[0;31m'
-GREEN='\033[0;32m'     
+GREEN='\033[0;32m'
 YELLOW='\033[1;33m'    
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
   
 # Default values
-DEFAULT_LANGUAGE="en"  
+DEFAULT_LANGUAGE="en"
 DEFAULT_VARIANT="nopic"
 KIWIX_PORT=8080 
 # More threads = Faster serving. 
 # Ultimately bandwidth-bound though :P     
 KIWIX_THREADS=16
-DOWNLOAD_URL="https://download.kiwix.org/zim/wikipedia"  
+DOWNLOAD_URL="https://download.kiwix.org/zim/wikipedia"
 WIKIPEDIA_PATH="$HOME/wikipedia"
 # If the server crashes more than this, we give up.
 MAX_RESTARTS=100
@@ -42,6 +42,7 @@ print_error() {
 keep_kiwix_alive() {   
     local zim_file="$1"
     local restart_count=0 
+    e
   
     while [ $restart_count -lt $MAX_RESTARTS ]; do
  restart_count=$((restart_count + 1))
@@ -49,9 +50,9 @@ keep_kiwix_alive() {
  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting kiwix-serve (attempt $restart_count/$MAX_RESTARTS)..." >> "$WIKIPEDIA_PATH/watchdog.log"
   
  # Start kiwix-serve and capture its PID   
- kiwix-serve --port=$KIWIX_PORT "$zim_file" \     
+ kiwix-serve --port=$KIWIX_PORT "$zim_file" \
      -t $KIWIX_THREADS --address=127.0.0.1 \
-     >> "$WIKIPEDIA_PATH/kiwix.log" 2>&1 & 
+     >> "$WIKIPEDIA_PATH/kiwix.log" 2>&1 &
   
  local kiwix_pid=$!
  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server started with PID: $kiwix_pid" >> "$WIKIPEDIA_PATH/watchdog.log"     
@@ -119,7 +120,7 @@ main() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ZIM file: $zim_file" >> "$WIKIPEDIA_PATH/watchdog.log"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Port: $KIWIX_PORT" >> "$WIKIPEDIA_PATH/watchdog.log" 
  
-    keep_kiwix_alive "$zim_file"    
+    keep_kiwix_alive "$zim_file"
 }
 
 main "$@"
