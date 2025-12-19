@@ -2,16 +2,28 @@
 Using Language Models to play the Wikipedia Game
 
 ## Getting Started
-1. Clone the repository:
+0. Use Linux.
+1. Download dependencies:
+   ```bash
+   curl -fsSL https://uv.dev/install.sh | bash
+   source ~/.uv/uv.sh
+   uv install python@3.10
+   uv use python@3.10
+   sudo apt-get install libjemalloc2 kiwix-tools
+   ```
+2. Clone the repository:
    ```bash
    git clone https://github.com/N00bcak/playing-wikigame.git
    cd playing-wikigame
    ```
-2. Install the required packages from uv:
+3. Install the required packages from uv:
    ```bash
    ./handle-dependencies.sh
    ```
 
+## License
+
+This project uses [GEM](https://github.com/axon-rl/gem) and is licensed under the Apache 2.0 License:
 ```
 Copyright 2025 AxonRL Team. All Rights Reserved.
 

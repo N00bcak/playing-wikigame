@@ -5,9 +5,9 @@ if [[ "$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))
 fi
 
 # Install required packages
-# Can't use requirements.txt because of some shenanigans with deepspeed, flash-attn, and oat.
+# Can't use requirements.txt because of some dumb shenanigans with deepspeed and flash-attn.
 uv pip install --upgrade pip
-uv pip install wheel 
+uv pip install wheel pywikiapi
 uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 uv pip install vllm==0.8.4
 uv pip install oat-llm --no-build-isolation
@@ -16,7 +16,9 @@ uv pip install oat-llm --no-build-isolation
 uv pip install gem-llm[search]
 
 # TODO: Replace with gem when the build hits PyPI
-git clone git@github.com:N00bcak/gem.git
+if ! [ -d ../gem ]; then
+    git clone git@github.com:N00bcak/gem.git
+fi
 cd ../gem
 # TODO: Stop using wikigame branch once merged.
 git checkout wikigame
