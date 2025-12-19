@@ -1,4 +1,4 @@
-xport LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2
 export LD_LIBRARY_PATH=$(python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH
 export NCCL_CUMEM_ENABLE=0
 export LP_DEBUG=1
@@ -8,11 +8,28 @@ export LP_LOG_LEVEL=DEBUG
 export NCCL_DEBUG=INFO
 
 N_GPUS=8
-GRADIENT_BATCH_SIZE=128
+GRADIENT_BATCH_SIZE=256
+RUN_NAME=gem-wikigame
+export TRITON_CACHE_DIR=/tmp/triton_cache_$RUN_NAME
 
-# Note we kind of cheat and use Qwen3-1.7B which is already instruct-tuned.
-yes n | python train.py \
+# Some notes:
+# 1. We make the task easier by using a good baseline (Qwen3 instruct-tuned) 
+#     rather than a base model, allowing for better initial performance.
+# 2. As we have no requirements on the model's performance in a vast open-domain,
+#     KL divergence constraints are not necessary.
+# 3. Adjust GRADIENT_BATCH_SIZE as necessary to create a stable training process.
+#    Smaller batch sizes can perform poorly on complex tasks like WikiGame.
+
+python train.py \
     --env_id game:WikiGame-v0-hard \
+    --wg_backend kiwix \
+    --wg_url http://localhost:8080 \
+    --wg_query_delay_ms 0 \
+    --wg_query_use_cache True \
+    --wg_maxlen_value 150 \
+    --wg_maxlen_unit characters \
+    --wg_variant noregrets \
+    --kiwix_zimfile wikipedia_en_simple_all_nopic_2025-09 \
     --wrappers concat \
     --prompt_template qwen3_game \
     --gamma 0.9 \
@@ -48,6 +65,6 @@ yes n | python train.py \
     --max_train 65536 \
     --max_save_num 8 \
     --use-wb \
-    --wb-run-name gem-wikigame-instruct-cluster \
-    --save_path gem-wikigame-instruct-cluster \
+    --wb-run-name $RUN_NAME \
+    --save_path $RUN_NAME \
     --wb_project gem

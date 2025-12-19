@@ -104,16 +104,24 @@ class Args(PPOArgs):
     eval_steps: int = 32  # Evaluation interval in steps
     eval_games: int = 16  # Number of games for evaluation
     eval_dump_game_states:  bool = True  # Whether to dump game states during evaluation
-    # eval_data: Optional[str] = "./data"
-    # eval_input_key: str = "input"
-    # eval_output_key: str = "answer"
-    # eval_split: str = "all"
 
     # Misc settings
     dump_experience_every: int = 1  # Dump experience data
 
     # Episode collection logic
     keep_generation_failed: bool = False  # Keep episodes with generation failures
+
+    # Backend arguments
+    wg_backend: Literal['kiwix', 'mw'] = "kiwix"
+    wg_url: str = "http://localhost:8080"
+    wg_query_delay_ms: int = 0
+    wg_query_use_cache: bool = True
+    wg_maxlen_value: int = 150
+    wg_maxlen_unit: Literal['sentences', 'characters', 'words'] = 'characters'
+    wg_variant = 'noregrets'
+
+    # Kiwix-specific arguments
+    kiwix_zimfile: str = "wikipedia_en_simple_all_nopic_2025-09"
 
 """ +=======================================+ """
 """ 3. Defining actor to collect experiences. """
@@ -159,14 +167,15 @@ class Actor(PPOMultiTurnActor):
             [self.args.env_id] * self.args.num_env,
             vec_kwargs=[{
                 "seed": self.args.seed + j, 
-                "backend": "kiwix", 
+                "backend": self.args.wg_backend,
                 "trawler_kwargs": {
-                    "url": "http://localhost:8080",
-                    "zimfile": "wikipedia_en_simple_all_nopic_2025-09",
-                    "query_delay_ms": 0,
-                    "query_use_cache": True,
+                    "url": self.args.wg_url,
+                    "zimfile": self.args.kiwix_zimfile,
+                    "query_delay_ms": self.args.wg_query_delay_ms,
+                    "query_use_cache": self.args.wg_query_use_cache,
                 },
-                "page_summary_length": (150, 'characters')
+                "page_summary_length": (self.args.wg_maxlen_value, self.args.wg_maxlen_unit),
+                "variant": self.args.wg_variant,
 
             } for j in range(self.args.num_env)],
             wrappers=wrappers,
@@ -610,7 +619,6 @@ def train(args: Args):
     # Define a distributed program that composes Actors and Learners
     program, local_resources = get_program(args, learner_cls=Learner, actor_cls=Actor)
 
-    # assert args.max_model_len == 12_000, f"wtf why {args.max_model_len} not 12K???"
     print(args.max_model_len)
 
     # Launch the program
