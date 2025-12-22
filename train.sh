@@ -26,7 +26,7 @@ python train.py \
     --wg_url http://localhost:8080 \
     --wg_query_delay_ms 0 \
     --wg_query_use_cache True \
-    --wg_maxlen_value 150 \
+    --wg_maxlen_value 250 \
     --wg_maxlen_unit characters \
     --wg_variant noregrets \
     --kiwix_zimfile wikipedia_en_simple_all_nopic_2025-09 \
@@ -57,11 +57,14 @@ python train.py \
     --generate_max_length 4096 \
     --temperature 1 \
     --top_p 1 \
-    --eval_steps -1 \
-    --save_steps -1 \
+    --eval_steps 32 \
+    --save_steps 32 \
     --eval_temperature 0.6 \
     --eval_top_p 0.95 \
-    --eval_generate_max_length 1024 \
+    --eval_generate_max_length 4096 \
+    --eval_games 16 \
+    --eval_dump_game_states True \
+    --eval_env_ids game:WikiGame-v0-hard game:Sudoku-v0-easy qa:HotpotQA \
     --max_train 65536 \
     --max_save_num 8 \
     --use-wb \

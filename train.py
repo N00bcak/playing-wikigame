@@ -41,7 +41,7 @@ class NoSamplesLeftException(Exception):
         return "No valid samples to continue with!"
 
 # Invalid action to be sent to the env to trigger format error penalty.
-INVALID_ACTION = "<｜INVALID_ACTION｜>"
+MALFORMED_ACTION = "<｜MALFORMED_ACTION｜>"
 
 def apply_qwen3_game_template(observation: str) -> str:
     return (
@@ -85,7 +85,7 @@ TEMPLATE_FACTORY = {
 @dataclass
 class Args(PPOArgs):
     # Environment settings
-    env_id: str = "rg:leg_counting"
+    env_id: str = "game:WikiGame-v0-hard"
     num_env: int = 1
     wrappers: str = ""
     async_env: bool = False
@@ -103,7 +103,8 @@ class Args(PPOArgs):
     # Evaluation settings
     eval_steps: int = 32  # Evaluation interval in steps
     eval_games: int = 16  # Number of games for evaluation
-    eval_dump_game_states:  bool = True  # Whether to dump game states during evaluation
+    eval_dump_game_states: bool = True  # Whether to dump game states during evaluation
+    eval_env_ids: List[str] = ["game:WikiGame-v0-hard", "game:Sudoku-v0-easy", "qa:HotpotQA"]
 
     # Misc settings
     dump_experience_every: int = 1  # Dump experience data
@@ -126,7 +127,6 @@ class Args(PPOArgs):
 """ +=======================================+ """
 """ 3. Defining actor to collect experiences. """
 """ +=======================================+ """
-
 
 class Actor(PPOMultiTurnActor):
     def init(self, actor_id, save_path):
@@ -176,7 +176,6 @@ class Actor(PPOMultiTurnActor):
                 },
                 "page_summary_length": (self.args.wg_maxlen_value, self.args.wg_maxlen_unit),
                 "variant": self.args.wg_variant,
-
             } for j in range(self.args.num_env)],
             wrappers=wrappers,
             async_mode=self.args.async_env,
@@ -351,7 +350,7 @@ class Actor(PPOMultiTurnActor):
         for i, exceeds_length in enumerate(exceeds_lengths):
             if exceeds_length:
                 # if prompt exceeds max model length we skipped the generation
-                executable_actions.append(INVALID_ACTION)
+                executable_actions.append(MALFORMED_ACTION)
                 extras.append({"generation_failed": True})
             else:
                 raw_action = sub_outputs[sub_i].outputs[0].text
@@ -369,12 +368,12 @@ class Actor(PPOMultiTurnActor):
                 # Valid extraction = proper eos + proper format
                 # Only used for metric logging
                 extracted_action = (
-                    INVALID_ACTION
+                    MALFORMED_ACTION
                     if response_is_truncated
                     else self.extract_action(raw_action)
                 )
                 executable_actions.append(
-                    INVALID_ACTION if response_is_truncated else raw_action
+                    MALFORMED_ACTION if response_is_truncated else raw_action
                 )
                 extras.append(
                     {
@@ -385,7 +384,7 @@ class Actor(PPOMultiTurnActor):
                         "response_ids": token_ids,
                         "response_logprobs": response_logprobs,
                         "response_is_truncated": response_is_truncated,
-                        "action_is_formatted": extracted_action != INVALID_ACTION,
+                        "action_is_formatted": extracted_action != MALFORMED_ACTION,
                         "generation_failed": False,
                         "generation_max_length_reached": (
                             len(prompt_token_ids) + len(token_ids)
@@ -418,9 +417,13 @@ class Actor(PPOMultiTurnActor):
                 self.args.prompt_template == "no"
                 and "qwen" in self.args.pretrain.lower()
             ):
-                formatted_action = extract_last_boxed_answer(text)
-                if formatted_action is None:
-                    formatted_action = text.strip()
+                # formatted_action = extract_last_boxed_answer(text)
+                # if formatted_action is None:
+                #     formatted_action = text.strip()
+                try:
+                    formatted_action = re.findall((r"\\boxed{([^}]+)}", text.strip()))[-1]
+                except IndexError as e:
+                    formatted_action = None
             elif self.args.prompt_template == "code":
                 code_blocks = re.findall(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
                 if not code_blocks:
@@ -431,49 +434,68 @@ class Actor(PPOMultiTurnActor):
                 raise NotImplementedError
 
             if formatted_action is None:
-                formatted_action = INVALID_ACTION
+                formatted_action = MALFORMED_ACTION
 
             return formatted_action
 
         except Exception as e:
             logging.error(f"Error in extract_action: {e}")
             # Return invalid action if extraction fails.
-            return INVALID_ACTION
+            return MALFORMED_ACTION
     
-    def run_evaluate_episode(self):
+    def run_eval_episode(self, env_id: Optional[str] = None) -> Tuple[dict, dict]:
         '''
         As with the classical RL setup, evaluate on the same environment.
 
         Logs trajectories and statistics into a local archive and optionally
         to WandB.
         '''
-        rewards = []
-        trajectories = []
+        rewards = {}
+        trajectories = {}
+        successes = {}
         self.eval_mode = True
-        for _ in range(self.args.eval_games):
+
+        # self-evaluation
+        env = self.env if env_id is None else gem.make(env_id)
+        for i in range(self.args.eval_games):
+            rewards[f"game_{i}"] = []
+            trajectories[f"game_{i}"] = []
+            successes[f"game_{i}"] = []
             curr_rew = 0.0
             curr_traj = []
-            obs, _ = self.env.reset()
+            obs, _ = env.reset()
             done = False
             while not done:
-                action, extra = self.agent_act(obs)  # type: ignore
-                obs, reward, terminated, truncated, info = self.env.step(action)
+                action, extra = self.agent_act(obs) # type: ignore
+                obs, reward, terminated, truncated, info = env.step(action)
                 done = terminated | truncated
                 curr_rew += reward
                 curr_traj.append(extra.get(key, "") for key in ["formatted_observation", "response", "extracted_action"])
-            rewards.append(curr_rew)
-            trajectories.append(curr_traj)
+            
+            if (
+                'Congratulations' in obs[0]
+                or (
+                    env_id.startswith('qa:') and info[0].get('correct', False)
+                )
+            ):
+                successes[f"game_{i}"].append(1)
+            else:
+                successes[f"game_{i}"].append(0)
+            rewards[f"game_{i}"].append(curr_rew)
+            trajectories[f"game_{i}"].append(curr_traj)
 
         # Log the evaluation results
-        self.log_evaluation_results(rewards)
+        # self.log_evaluation_results(rewards)
         self.eval_mode = False
 
-    def log_evaluation_results(self, rewards):
-        """
-        Log the evaluation results, including average reward and other statistics.
-        """
-        avg_reward = sum(rewards) / len(rewards) if rewards else 0
-        logging.info(f"Evaluation results - Average Reward: {avg_reward}")
+        return rewards, trajectories
+
+    # def log_evaluation_results(self, rewards):
+    #     """
+    #     Log the evaluation results, including average reward and other statistics.
+    #     """
+    #     avg_reward = sum(rewards) / len(rewards) if rewards else 0
+    #     logging.info(f"Evaluation results - Average Reward: {avg_reward}")
 
 class DummyPromptDataset(Dataset):
     """Empty dataset to satisfy OAT's requirements without actually loading data."""
@@ -518,6 +540,7 @@ class Learner(PPOMultiTurnLearner):
         # but doesn't actually load any data
         # Used to control the training episode, set a large number.
         self.prompts_dataset = DummyPromptDataset(size=int(1e9))
+        self.eval_prompts_dataset = DummyPromptDataset(size=self.args.eval_games)
 
         # Create the dataloaders
         self.prompts_dataloader = strategy.setup_dataloader(
@@ -525,6 +548,12 @@ class Learner(PPOMultiTurnLearner):
             strategy.args.rollout_batch_size_per_device,
             shuffle=False,  # No need to shuffle dummy data
         )
+        self.eval_prompts_dataloader = strategy.setup_dataloader(
+            self.eval_prompts_dataset,
+            strategy.args.eval_batch_size,
+            shuffle=False,  # No need to shuffle dummy data
+        )
+
 
     def evaluate(self, _unused_dataloader, steps):
         """
@@ -547,7 +576,7 @@ class Learner(PPOMultiTurnLearner):
         # ------------------------------------------------------------------
         # For now we are only playing one game.
         # In future we can extend to multiple games by passing a list of env_ids.
-        eval_env_ids = [self.args.env_id]
+        # eval_env_ids = [self.args.env_id, "game:Sudoku-v0-easy", "qa:HotpotQA"]
 
         # ------------------------------------------------------------------
         # Rank 0 distributes evaluation workloads to all ranks then collects and populates metrics
@@ -557,7 +586,7 @@ class Learner(PPOMultiTurnLearner):
 
             # Generate evaluation runs
             eval_runs_list = []
-            for env_id in eval_env_ids:
+            for env_id in self.args.eval_env_ids:
                 for game_nr in range(total_games):
                     eval_runs_list.append((env_id, game_nr))
 
@@ -605,8 +634,15 @@ class Learner(PPOMultiTurnLearner):
                     open(eval_results_path, "w"),
                     indent=4,
                 )
+            
+            dist.barrier()
 
-        dist.barrier()
+            self._post_evaluate()
+            self.strategy.print(
+                f"Finished evaluating on games at step {steps} in {time() - t0:.2f} seconds"
+            )
+
+            return game_stats
 
 
 def train(args: Args):
@@ -628,7 +664,6 @@ def train(args: Args):
         local_resources=local_resources,
         terminal="current_terminal",
     )
-
 
 if __name__ == "__main__":
     # Get default arguments and customize them
