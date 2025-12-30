@@ -8,8 +8,10 @@ export LP_LOG_LEVEL=DEBUG
 export NCCL_DEBUG=INFO
 
 N_GPUS=8
-GRADIENT_BATCH_SIZE=256
+GRADIENT_BATCH_SIZE=512
 RUN_NAME=gem-wikigame
+# Prevent deadlocks in triton caches by using a unique cache dir per run
+# This won't affect you unless you have multiple runs stored on the same machine.
 export TRITON_CACHE_DIR=/tmp/triton_cache_$RUN_NAME
 
 # Some notes:
@@ -19,30 +21,32 @@ export TRITON_CACHE_DIR=/tmp/triton_cache_$RUN_NAME
 #     KL divergence constraints are not necessary.
 # 3. Adjust GRADIENT_BATCH_SIZE as necessary to create a stable training process.
 #    Smaller batch sizes can perform poorly on complex tasks like WikiGame.
+# 4. To perform evals, use --eval_only flag to activate killswitch.
+#   Not very elegant but gets the job done.
 
 python train.py \
-    --env_id game:WikiGame-v0-hard \
+    --env_id game:WikiGame-v0-easy \
     --wg_backend kiwix \
     --wg_url http://localhost:8080 \
     --wg_query_delay_ms 0 \
-    --wg_query_use_cache True \
+    --wg_query_use_cache \
     --wg_maxlen_value 250 \
     --wg_maxlen_unit characters \
     --wg_variant noregrets \
     --kiwix_zimfile wikipedia_en_simple_all_nopic_2025-09 \
     --wrappers concat \
     --prompt_template qwen3_game \
-    --gamma 0.9 \
+    --gamma 1.0 \
     --gpus $N_GPUS \
     --gradient-checkpointing \
     --num_samples 1 \
     --rollout_batch_size $GRADIENT_BATCH_SIZE \
-    --num_env 1 \
+    --num_env 8 \
     --rollout_batch_size_per_device $((GRADIENT_BATCH_SIZE / N_GPUS)) \
     --pi_buffer_maxlen_per_device $((GRADIENT_BATCH_SIZE / N_GPUS)) \
     --pretrain Qwen/Qwen3-1.7B \
     --enable_prefix_caching \
-    --vllm_gpu_ratio 0.25 \
+    --vllm_gpu_ratio 0.3 \
     --vllm_sleep \
     --collocate \
     --rnd-seed \
@@ -57,13 +61,13 @@ python train.py \
     --generate_max_length 4096 \
     --temperature 1 \
     --top_p 1 \
-    --eval_steps 32 \
-    --save_steps 32 \
+    --eval_steps 16 \
+    --save_steps 16 \
     --eval_temperature 0.6 \
     --eval_top_p 0.95 \
     --eval_generate_max_length 4096 \
-    --eval_games 16 \
-    --eval_dump_game_states True \
+    --eval_games 64 \
+    --eval_dump_game_states \
     --eval_env_ids game:WikiGame-v0-hard game:Sudoku-v0-easy qa:HotpotQA \
     --max_train 65536 \
     --max_save_num 8 \

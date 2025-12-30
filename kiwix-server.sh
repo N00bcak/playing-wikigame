@@ -1,94 +1,94 @@
 # VIBECODED & ONLY TESTED ON LINUX MACHINES.
 #!/bin/bash
-           
-set -e  # Exit on error                     
-           
-# Color codes for prettier output           
+
+set -e  # Exit on error
+
+# Color codes for prettier output
 RED='\033[0;31m'     
 GREEN='\033[0;32m'   
 YELLOW='\033[1;33m'  
 BLUE='\033[0;34m'    
-NC='\033[0m' # No Color                     
-           
+NC='\033[0m' # No Color
+
 # Default values     
 DEFAULT_LANGUAGE="en"
-DEFAULT_VARIANT="nopic"                     
-KIWIX_PORT=8080      
-# More threads = Faster serving.            
-# Ultimately bandwidth-bound though :P      
+DEFAULT_VARIANT="nopic"
+KIWIX_PORT=8080
+# More threads = Faster serving. 
+# Ultimately bandwidth-bound though :P
 KIWIX_THREADS=16     
-DOWNLOAD_URL="https://download.kiwix.org/zim/wikipedia"                
-WIKIPEDIA_PATH="$HOME/bcy/wikipedia"        
-           
-# Function to print colored messages        
-print_info() {       
-    printf "${BLUE} ${NC}$1\n" >&2          
-}          
-           
+DOWNLOAD_URL="https://download.kiwix.org/zim/wikipedia"     
+WIKIPEDIA_PATH="$HOME/bcy/wikipedia"  
+
+# Function to print colored messages  
+print_info() { 
+    printf "${BLUE} ${NC}$1\n" >&2    
+}    
+
 print_success() {    
-    printf "${GREEN} ${NC} $1\n" >&2        
-}          
-           
+    printf "${GREEN} ${NC} $1\n" >&2  
+    }    
+
 print_warning() {    
-    printf "${YELLOW} ${NC} $1\n" >&2       
-}          
-           
-print_error() {      
-    printf "${RED} ${NC} $1\n" >&2          
-}          
-           
+    printf "${YELLOW} ${NC} $1\n" >&2 
+    }    
+
+print_error() {
+        printf "${RED} ${NC} $1\n" >&2    
+}    
+
 # Function to check if kiwix-tools is installed 
-check_kiwix() {      
-    if command -v kiwix-serve &> /dev/null; then
-        print_success "kiwix-serve is already installed"               
+check_kiwix() {
+        if command -v kiwix-serve &> /dev/null; then
+        print_success "kiwix-serve is already installed"    
         return 0     
     else   
-        print_warning "kiwix-serve is not installed"                   
-        return 1     
+        print_warning "kiwix-serve is not installed"  
+                return 1     
     fi     
-}          
-           
+}    
+
 # Function to install kiwix-tools on Linux  
 install_kiwix() {    
-    print_info "Attempting to install kiwix-tools..."                  
-           
-    # Detect the package manager            
-    if command -v apt-get &> /dev/null; then        
-        print_info "Using apt package manager..."                 
-        sudo apt-get update      
-        sudo apt-get install -y kiwix-tools
+    print_info "Attempting to install kiwix-tools..." 
+
+    # Detect the package manager 
+    if command -v apt-get &> /dev/null; then  
+            print_info "Using apt package manager..."
+            sudo apt-get update
+            sudo apt-get install -y kiwix-tools
     elif command -v dnf &> /dev/null; then 
-        print_info "Using dnf package manager..."                 
-        sudo dnf install -y kiwix-tools    
+        print_info "Using dnf package manager..."
+                sudo dnf install -y kiwix-tools    
     elif command -v yum &> /dev/null; then 
-        print_info "Using yum package manager..."                 
-        sudo yum install -y kiwix-tools    
-    elif command -v pacman &> /dev/null; then                     
-        print_info "Using pacman package manager..."              
-        sudo pacman -S --noconfirm kiwix-tools                    
-    else  
-        print_error "Could not detect package manager"            
-        print_info "Please install kiwix-tools manually:"         
-        print_info "  Visit: https://www.kiwix.org/en/downloads/kiwix-serve/"                
-        exit 1                   
-    fi
-      
-    if [ $? -eq 0 ]; then        
-        print_success "kiwix-tools installed successfully!"       
-    else  
-        print_error "Installation failed"                   
-        exit 1                
+        print_info "Using yum package manager..."
+                sudo yum install -y kiwix-tools    
+    elif command -v pacman &> /dev/null; then
+        print_info "Using pacman package manager..."   
+        sudo pacman -S --noconfirm kiwix-tools   
+            else  
+        print_error "Could not detect package manager" 
+        print_info "Please install kiwix-tools manually:"   
+                print_info "  Visit: https://www.kiwix.org/en/downloads/kiwix-serve/"     
+        exit 1  
+            fi
+
+    if [ $? -eq 0 ]; then  
+            print_success "kiwix-tools installed successfully!" 
+        else  
+        print_error "Installation failed"  
+                exit 1     
     fi 
 }
 
 # Function to display language and variant information
-show_options_info() {                 
-    echo ""    
-    print_info "=== Wikipedia Language Options ==="          
-    echo "  Common languages:"        
-    echo "    en         - English (full Wikipedia, ~50GB nopic, ~100GB maxi)"      
-    echo "    en_simple     - Simple English (easier vocabulary, ~1GB nopic)"       
-    echo "    fr         - French"    
+show_options_info() {
+    echo ""
+    print_info "=== Wikipedia Language Options ==="    
+    echo "  Common languages:"
+    echo "    en         - English (full Wikipedia, ~50GB nopic, ~100GB maxi)"
+    echo "    en_simple     - Simple English (easier vocabulary, ~1GB nopic)" 
+    echo "    fr         - French"
     echo "    de         - German"    
     echo "    es         - Spanish"   
     echo "    ja         - Japanese"
@@ -120,19 +120,19 @@ get_latest_zim_filename() {
         print_info "Browse available files at: $DOWNLOAD_URL/"
         read -p "Enter the exact ZIM filename to download (or 'q' to quit): " manual_filename
         if [[ "$manual_filename" == "q" ]] || [[ -z "$manual_filename" ]]; then
-            print_error "Cannot proceed without a valid filename. Exiting."
-            exit 1
+ print_error "Cannot proceed without a valid filename. Exiting."
+ exit 1
         fi
         echo "$manual_filename"
     else
         print_success "Found latest file: $latest_file"
-         
-        local filesize=$(curl -s "$DOWNLOAD_URL/" | grep "$latest_file" | grep -oE '[0-9]+[KMG]' | tail -1)
+   
+           local filesize=$(curl -s "$DOWNLOAD_URL/" | grep "$latest_file" | grep -oE '[0-9]+[KMG]' | tail -1)
         if [ -n "$filesize" ]; then
-            print_info "Approximate size: $filesize"
+ print_info "Approximate size: $filesize"
         fi
-         
-        echo "$latest_file"
+   
+           echo "$latest_file"
     fi
 }
 
@@ -150,9 +150,9 @@ download_zim() {
         read -p "Do you want to re-download it? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Skipping download, using existing file"
-            echo "$zim_path"
-            return 0
+ print_info "Skipping download, using existing file"
+ echo "$zim_path"
+ return 0
         fi
     fi
      
@@ -179,7 +179,7 @@ download_zim() {
         print_error "Download failed. Please check your internet connection and try again."
         exit 1
     fi
-}         
+}   
 
 
 # Main script execution

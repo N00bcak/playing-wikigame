@@ -20,6 +20,21 @@ Using Language Models to play the Wikipedia Game
    ```bash
    ./handle-dependencies.sh
    ```
+4. Set up the Kiwix server:
+   ```bash
+   ./kiwix-server.sh
+   ```
+
+## Training an agent
+1. Start the Kiwix server if not already running:
+   ```bash
+   ./kiwix-deploy.sh <YOUR_ZIMFILE_PATH_HERE>
+   ```
+
+2. Edit training script as necessary before running:
+   ```bash
+   ./train.sh
+   ```
 
 ## License
 

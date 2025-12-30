@@ -1,3 +1,14 @@
+# Copyright 2025 AxonRL Team. All Rights Reserved.
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#     http://www.apache.org/licenses/LICENSE-2.0
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 # Mostly lifted from gem/examples/train_oat_mt.py,
 # then broken up and modified for clarity.
 
@@ -8,7 +19,7 @@ import os
 import re
 import random
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import time, sleep
 from tqdm import tqdm
 from typing import List, Literal, Optional, Tuple
@@ -104,7 +115,8 @@ class Args(PPOArgs):
     eval_steps: int = 32  # Evaluation interval in steps
     eval_games: int = 16  # Number of games for evaluation
     eval_dump_game_states: bool = True  # Whether to dump game states during evaluation
-    eval_env_ids: List[str] = ["game:WikiGame-v0-hard", "game:Sudoku-v0-easy", "qa:HotpotQA"]
+    eval_env_ids: List[str] = field(default_factory=lambda: ["game:WikiGame-v0-hard", "game:Sudoku-v0-easy", "qa:HotpotQA"])
+    eval_only: bool = False  # Only run evaluation
 
     # Misc settings
     dump_experience_every: int = 1  # Dump experience data
@@ -119,7 +131,7 @@ class Args(PPOArgs):
     wg_query_use_cache: bool = True
     wg_maxlen_value: int = 150
     wg_maxlen_unit: Literal['sentences', 'characters', 'words'] = 'characters'
-    wg_variant = 'noregrets'
+    wg_variant: str = 'noregrets'
 
     # Kiwix-specific arguments
     kiwix_zimfile: str = "wikipedia_en_simple_all_nopic_2025-09"
@@ -185,6 +197,7 @@ class Actor(PPOMultiTurnActor):
         logging.info(
             f"Actor-{self.actor_id} starting to collect experiences at step {self.step_count}"
         )
+        assert not self.eval_mode, "Killswitch hit during experience collection!"
         env, min_steps = self.env, self.args.rollout_batch_size_per_device
         obs, _ = env.reset()
         done = False
@@ -309,7 +322,6 @@ class Actor(PPOMultiTurnActor):
 
         Returns:
             Tuple[str, dict]: Action and extra data.
-
         """
         formatted_observations = []
         for observation in vec_observation:
@@ -417,13 +429,10 @@ class Actor(PPOMultiTurnActor):
                 self.args.prompt_template == "no"
                 and "qwen" in self.args.pretrain.lower()
             ):
-                # formatted_action = extract_last_boxed_answer(text)
-                # if formatted_action is None:
-                #     formatted_action = text.strip()
-                try:
-                    formatted_action = re.findall((r"\\boxed{([^}]+)}", text.strip()))[-1]
-                except IndexError as e:
-                    formatted_action = None
+                # Note: Regex is incapable of handling nested boxes.
+                formatted_action = extract_last_boxed_answer(text)
+                if formatted_action is None:
+                    formatted_action = text.strip()
             elif self.args.prompt_template == "code":
                 code_blocks = re.findall(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
                 if not code_blocks:
@@ -442,60 +451,91 @@ class Actor(PPOMultiTurnActor):
             logging.error(f"Error in extract_action: {e}")
             # Return invalid action if extraction fails.
             return MALFORMED_ACTION
-    
+
     def run_eval_episode(self, env_id: Optional[str] = None) -> Tuple[dict, dict]:
         '''
-        As with the classical RL setup, evaluate on the same environment.
-
-        Logs trajectories and statistics into a local archive and optionally
-        to WandB.
+        Screw it. Use multiple envs.
         '''
-        rewards = {}
-        trajectories = {}
-        successes = {}
+        trial_seed = pow(int(time() * 1_000 + self.args.seed), 3, 10 ** 9 + 7)
+        rewards = []
+        trajectories = []
+        successes = []
         self.eval_mode = True
 
         # self-evaluation
-        env = self.env if env_id is None else gem.make(env_id)
-        for i in range(self.args.eval_games):
-            rewards[f"game_{i}"] = []
-            trajectories[f"game_{i}"] = []
-            successes[f"game_{i}"] = []
-            curr_rew = 0.0
-            curr_traj = []
-            obs, _ = env.reset()
-            done = False
-            while not done:
-                action, extra = self.agent_act(obs) # type: ignore
-                obs, reward, terminated, truncated, info = env.step(action)
-                done = terminated | truncated
-                curr_rew += reward
-                curr_traj.append(extra.get(key, "") for key in ["formatted_observation", "response", "extracted_action"])
-            
+        wrappers = get_wrapper_fns(self.args.wrappers, tokenizer=self.tokenizer)
+        if env_id == self.args.env_id:
+            env = gem.make_vec(
+                [env_id] * self.args.num_env,
+                vec_kwargs=[{
+                    "seed": trial_seed + j,
+                    "backend": self.args.wg_backend,
+                    "trawler_kwargs": {
+                        "url": self.args.wg_url,
+                        "zimfile": self.args.kiwix_zimfile,
+                        "query_delay_ms": self.args.wg_query_delay_ms,
+                        "query_use_cache": self.args.wg_query_use_cache,
+                    },
+                    "page_summary_length": (self.args.wg_maxlen_value, self.args.wg_maxlen_unit),
+                    "variant": self.args.wg_variant,
+                } for j in range(self.args.num_env)],
+                wrappers=wrappers,
+                async_mode=self.args.async_env,
+            )
+        # As of 311225, need extract_boxed for QA envs.
+        elif "qa" in env_id.lower():
+            env = gem.make_vec(
+                [env_id] * self.args.num_env,
+                vec_kwargs=[{"seed": trial_seed + j, "extract_boxed": True} for j in range(self.args.num_env)],
+                wrappers=wrappers,
+                async_mode=self.args.async_env,
+            )
+        else:
+            env = gem.make_vec(
+                [env_id] * self.args.num_env,
+                vec_kwargs=[{"seed": trial_seed + j} for j in range(self.args.num_env)],
+                wrappers=wrappers,
+                async_mode=self.args.async_env,
+            )
+
+        eval_result = {
+            f"ep_{i}": {
+                "reward_hist": [],
+                "success": [],
+                "response_lengths": [],
+            } for i in range(env.num_envs)
+        }
+        trajectories = {
+            f"ep_{i}": []
+            for i in range(env.num_envs)
+        }
+        curr_rew = [0] * env.num_envs
+        obs, _ = env.reset()
+        dones = [False] * env.num_envs
+        while not all(dones):
+            action, extra = self.agent_act(obs) # type: ignore
+            obs, reward, terminated, truncated, info = env.step(action)
+            for i in range(env.num_envs):
+                curr_rew[i] += reward[i]
+                if not dones[i]:
+                    # Only log for non-done envs
+                    trajectories[f"ep_{i}"].append({key: extra[i].get(key, "DID NOT FIND") for key in ["formatted_observation", "response", "extracted_action"]})
+                    eval_result[f"ep_{i}"]["response_lengths"].append(len(extra[i]["response_ids"]) if "response_ids" in extra[i] else -1)
+            dones = terminated | truncated
+        
+        for i in range(env.num_envs):
             if (
-                'Congratulations' in obs[0]
+                'Congratulations' in obs[i]
                 or (
-                    env_id.startswith('qa:') and info[0].get('correct', False)
+                    'qa' in env_id.lower() and info[i].get('correct', False)
                 )
             ):
-                successes[f"game_{i}"].append(1)
+                eval_result[f"ep_{i}"]["success"].append(1)
             else:
-                successes[f"game_{i}"].append(0)
-            rewards[f"game_{i}"].append(curr_rew)
-            trajectories[f"game_{i}"].append(curr_traj)
+                eval_result[f"ep_{i}"]["success"].append(0)
+            eval_result[f"ep_{i}"]["reward_hist"].append(curr_rew[i])
 
-        # Log the evaluation results
-        # self.log_evaluation_results(rewards)
-        self.eval_mode = False
-
-        return rewards, trajectories
-
-    # def log_evaluation_results(self, rewards):
-    #     """
-    #     Log the evaluation results, including average reward and other statistics.
-    #     """
-    #     avg_reward = sum(rewards) / len(rewards) if rewards else 0
-    #     logging.info(f"Evaluation results - Average Reward: {avg_reward}")
+        return eval_result, trajectories
 
 class DummyPromptDataset(Dataset):
     """Empty dataset to satisfy OAT's requirements without actually loading data."""
@@ -554,7 +594,6 @@ class Learner(PPOMultiTurnLearner):
             shuffle=False,  # No need to shuffle dummy data
         )
 
-
     def evaluate(self, _unused_dataloader, steps):
         """
         Online evaluation with hierarchical metrics.
@@ -570,7 +609,7 @@ class Learner(PPOMultiTurnLearner):
         self.strategy.print(f"Start evaluating on games at step {steps}")
 
         # 1) Game eval.
-        t0 = time.time()
+        t0 = time()
         # ------------------------------------------------------------------
         # Initialize metrics tracking
         # ------------------------------------------------------------------
@@ -581,40 +620,65 @@ class Learner(PPOMultiTurnLearner):
         # ------------------------------------------------------------------
         # Rank 0 distributes evaluation workloads to all ranks then collects and populates metrics
         # ------------------------------------------------------------------
+        game_stats = {env_id: {"episodes": [], } for env_id in self.args.eval_env_ids}
         if self.strategy.is_rank_0():
             total_games = self.args.eval_games
 
             # Generate evaluation runs
             eval_runs_list = []
             for env_id in self.args.eval_env_ids:
-                for game_nr in range(total_games):
+                for game_nr in range(0, total_games, self.args.num_env):
                     eval_runs_list.append((env_id, game_nr))
 
             # Run evaluation
             futs = []
-            game_stats = {}
             progress_bar = tqdm(range(len(eval_runs_list)), desc="Evaluating")
             random.shuffle(eval_runs_list)
 
             for i, (env_id, game_nr) in enumerate(eval_runs_list):
                 actor = self.actors[i % len(self.actors)]
-                futs.append(actor.futures.run_eval_episode(env_id))
+                futs.append((env_id, actor.futures.run_eval_episode(env_id)))
+                logging.info(f"Dispatched {env_id}, [{game_nr}... +{self.args.num_env}] to actor {i % len(self.actors)}")
 
                 # Process results in batches
                 if len(futs) == len(self.actors) or i == len(eval_runs_list) - 1:
-                    for fut in futs:
+                    for env_id_fut, fut in futs:
                         result, game_history = fut.result()
-                        game_stats[game_nr] = {
-                            'metadata': {
-                                'env_id': env_id,
-                                'game_nr': game_nr,
+                        game_stats[env_id_fut]["episodes"].extend([{
+                            'game_history': game_history[f"ep_{j}"],
+                            'result': {
+                                'reward_hist': result[f"ep_{j}"]["reward_hist"],
+                                'success': result[f"ep_{j}"]["success"],
+                                'response_lengths': result[f"ep_{j}"]["response_lengths"],
                             },
-                            'metrics': result,
-                            'history': game_history,
-                        }
+                        } for j in range(self.args.num_env)])
+                            
                         progress_bar.update(1)
-
                     futs.clear()
+                
+            # Compute final metrics
+            for env_id in game_stats.keys():
+                episodes = game_stats[env_id]["episodes"]
+                game_stats[env_id].update({
+                    "eval/success_rate": np.mean(
+                        [
+                            ep["result"]["success"][-1]
+                            for ep in game_stats[env_id]["episodes"]
+                        ]
+                    ) if episodes else 0.0,
+                    "eval/avg_reward": np.mean(
+                        [
+                            sum(ep["result"]["reward_hist"])
+                            for ep in game_stats[env_id]["episodes"]
+                        ]
+                    ) if episodes else 0.0,
+                    "eval/avg_response_length": np.mean(
+                        [
+                            np.mean(ep["result"]["response_lengths"])
+                            for ep in game_stats[env_id]["episodes"]
+                        ]
+                    ) if episodes else 0.0,
+                })
 
             if self.args.eval_dump_game_states:
 
@@ -628,21 +692,39 @@ class Learner(PPOMultiTurnLearner):
                     eval_results_dir,
                     f"{steps}_eval_game.json",
                 )
-
+                
                 json.dump(
                     game_stats,
                     open(eval_results_path, "w"),
                     indent=4,
                 )
             
-            dist.barrier()
-
-            self._post_evaluate()
-            self.strategy.print(
+            logging.info(
                 f"Finished evaluating on games at step {steps} in {time() - t0:.2f} seconds"
             )
 
-            return game_stats
+            # So apparently deepspeed is EXTREMELY picky about what you can log as a Tensor...
+            # To comply we have no choice but to flatten the dictionary here.
+            game_stats_flat = {
+                f"eval/{env_id}/{key}": value
+                for env_id, stats in game_stats.items()
+                for key, value in stats.items()
+                if key != "episodes"
+            }
+            game_stats_flat["eval/time_taken_seconds"] = time() - t0
+            game_stats_flat["eval/step"] = steps
+        else:
+            game_stats_flat = None
+
+        obj_list = [game_stats_flat]
+        dist.broadcast_object_list(obj_list, src=0)
+        game_stats_flat = obj_list[0]
+        # CPU barrier to ensure all ranks sync here
+        dist.barrier(group=self._same_actor_group)
+        logging.info(f"rank {self.strategy.get_rank()} cpubarrier done")
+        dist.barrier()
+        self._post_evaluate()
+        return game_stats_flat
 
 
 def train(args: Args):
