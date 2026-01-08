@@ -116,7 +116,7 @@ class Args(PPOArgs):
     eval_games: int = 16  # Number of games for evaluation
     eval_dump_game_states: bool = True  # Whether to dump game states during evaluation
     eval_env_ids: List[str] = field(default_factory=lambda: ["game:WikiGame-v0-hard", "game:Sudoku-v0-easy", "qa:HotpotQA"])
-    eval_only: bool = False  # Only run evaluation
+    eval_only: bool = False  # If true, only run evaluation without training
 
     # Misc settings
     dump_experience_every: int = 1  # Dump experience data
@@ -139,6 +139,7 @@ class Args(PPOArgs):
 """ +=======================================+ """
 """ 3. Defining actor to collect experiences. """
 """ +=======================================+ """
+
 
 class Actor(PPOMultiTurnActor):
     def init(self, actor_id, save_path):
@@ -178,7 +179,7 @@ class Actor(PPOMultiTurnActor):
         self.env = gem.make_vec(
             [self.args.env_id] * self.args.num_env,
             vec_kwargs=[{
-                "seed": self.args.seed + j, 
+                "seed": self.args.seed + j,
                 "backend": self.args.wg_backend,
                 "trawler_kwargs": {
                     "url": self.args.wg_url,
@@ -193,11 +194,49 @@ class Actor(PPOMultiTurnActor):
             async_mode=self.args.async_env,
         )
 
+        self.eval_envs = {}
+
+        # Ensure different eval envs are created.
+        for eval_env_id in tqdm(self.args.eval_env_ids, desc="Creating eval envs"):
+            if 'wikigame' in eval_env_id.lower():
+                self.eval_envs[eval_env_id] = gem.make_vec(
+                    [eval_env_id] * self.args.num_env,
+                    vec_kwargs=[{
+                        "seed": self.args.seed + 1000 + j,
+                        "backend": self.args.wg_backend,
+                        "trawler_kwargs": {
+                            "url": self.args.wg_url,
+                            "zimfile": self.args.kiwix_zimfile,
+                            "query_delay_ms": self.args.wg_query_delay_ms,
+                            "query_use_cache": self.args.wg_query_use_cache,
+                        },
+                        "page_summary_length": (self.args.wg_maxlen_value, self.args.wg_maxlen_unit),
+                        "variant": self.args.wg_variant,
+                    } for j in range(self.args.num_env)],
+                    wrappers=wrappers,
+                    async_mode=self.args.async_env,
+                )
+            elif "qa" in eval_env_id.lower():
+                self.eval_envs[eval_env_id] = gem.make_vec(
+                    [eval_env_id] * self.args.num_env,
+                    vec_kwargs=[{"seed": self.args.seed + 1000 + j, "extract_boxed": True} for j in range(self.args.num_env)],
+                    wrappers=wrappers,
+                    async_mode=self.args.async_env,
+                )
+            else:
+                self.eval_envs[eval_env_id] = gem.make_vec(
+                    [eval_env_id] * self.args.num_env,
+                    vec_kwargs=[{"seed": self.args.seed + 1000 + j} for j in range(self.args.num_env)],
+                    wrappers=wrappers,
+                    async_mode=self.args.async_env,
+                )
+            sleep(1)  # Be nice to HF servers, if not you will get 502/443 error.
+
     def collect_experience(self):
         logging.info(
             f"Actor-{self.actor_id} starting to collect experiences at step {self.step_count}"
         )
-        assert not self.eval_mode, "Killswitch hit during experience collection!"
+        assert not self.args.eval_only, "Killswitch hit during experience collection!"
         env, min_steps = self.env, self.args.rollout_batch_size_per_device
         obs, _ = env.reset()
         done = False
@@ -212,7 +251,7 @@ class Actor(PPOMultiTurnActor):
             try:
                 action, extra = self.agent_act(obs)  # type: ignore
                 next_obs, reward, terminated, truncated, info = env.step(action)
-            except BackendFailureException as e: 
+            except BackendFailureException as e:
                 # Delay for 2 seconds to let the backend autonomously restart
                 logging.error(
                     f"Actor-{self.actor_id} encountered BackendFailureException. "
@@ -279,7 +318,7 @@ class Actor(PPOMultiTurnActor):
 
             obs = next_obs
             if len(tree.flatten(finished_episodes)) >= min_steps:
-                break        
+                break
 
         info = {
             "actor/num_generation_failed": num_generation_failed,
@@ -346,7 +385,7 @@ class Actor(PPOMultiTurnActor):
         ]
         if not len(sub_formatted_observations):
             raise NoSamplesLeftException()
-    
+
         logging.info(f"\nNumber of observations: {len(sub_formatted_observations)}\n")
         sub_idss = self.tokenizer(sub_formatted_observations).input_ids
         logging.info(
@@ -456,47 +495,12 @@ class Actor(PPOMultiTurnActor):
         '''
         Screw it. Use multiple envs.
         '''
-        trial_seed = pow(int(time() * 1_000 + self.args.seed), 3, 10 ** 9 + 7)
-        rewards = []
+        # trial_seed = pow(int(time() * 1_000 + self.args.seed), 3, 10 ** 9 + 7)
         trajectories = []
-        successes = []
         self.eval_mode = True
 
-        # self-evaluation
-        wrappers = get_wrapper_fns(self.args.wrappers, tokenizer=self.tokenizer)
-        if env_id == self.args.env_id:
-            env = gem.make_vec(
-                [env_id] * self.args.num_env,
-                vec_kwargs=[{
-                    "seed": trial_seed + j,
-                    "backend": self.args.wg_backend,
-                    "trawler_kwargs": {
-                        "url": self.args.wg_url,
-                        "zimfile": self.args.kiwix_zimfile,
-                        "query_delay_ms": self.args.wg_query_delay_ms,
-                        "query_use_cache": self.args.wg_query_use_cache,
-                    },
-                    "page_summary_length": (self.args.wg_maxlen_value, self.args.wg_maxlen_unit),
-                    "variant": self.args.wg_variant,
-                } for j in range(self.args.num_env)],
-                wrappers=wrappers,
-                async_mode=self.args.async_env,
-            )
-        # As of 311225, need extract_boxed for QA envs.
-        elif "qa" in env_id.lower():
-            env = gem.make_vec(
-                [env_id] * self.args.num_env,
-                vec_kwargs=[{"seed": trial_seed + j, "extract_boxed": True} for j in range(self.args.num_env)],
-                wrappers=wrappers,
-                async_mode=self.args.async_env,
-            )
-        else:
-            env = gem.make_vec(
-                [env_id] * self.args.num_env,
-                vec_kwargs=[{"seed": trial_seed + j} for j in range(self.args.num_env)],
-                wrappers=wrappers,
-                async_mode=self.args.async_env,
-            )
+        env = self.eval_envs[env_id]
+        term_rews = [0] * env.num_envs
 
         eval_result = {
             f"ep_{i}": {
@@ -521,13 +525,18 @@ class Actor(PPOMultiTurnActor):
                     # Only log for non-done envs
                     trajectories[f"ep_{i}"].append({key: extra[i].get(key, "DID NOT FIND") for key in ["formatted_observation", "response", "extracted_action"]})
                     eval_result[f"ep_{i}"]["response_lengths"].append(len(extra[i]["response_ids"]) if "response_ids" in extra[i] else -1)
+                else:
+                    term_rews[i] = reward[i]
+
+
             dones = terminated | truncated
-        
+
         for i in range(env.num_envs):
             if (
                 'Congratulations' in obs[i]
                 or (
-                    'qa' in env_id.lower() and info[i].get('correct', False)
+                    # I.e. reward is 1.0
+                    'qa' in env_id.lower() and term_rews[i] >= 0.999999999
                 )
             ):
                 eval_result[f"ep_{i}"]["success"].append(1)
@@ -536,6 +545,7 @@ class Actor(PPOMultiTurnActor):
             eval_result[f"ep_{i}"]["reward_hist"].append(curr_rew[i])
 
         return eval_result, trajectories
+
 
 class DummyPromptDataset(Dataset):
     """Empty dataset to satisfy OAT's requirements without actually loading data."""
@@ -748,6 +758,30 @@ def train(args: Args):
     )
 
 if __name__ == "__main__":
+
+    # Register custom envs
+    from gem.envs.registration import register
+    register(
+        "qa:HotpotQAWithDocs",
+        "gem.envs.qa_env:HotpotQaEnv",
+        dataset_name="hotpotqa/hotpot_qa",
+        split="train",
+        question_key="question",
+        documents_key="context",
+        answer_key="answer",
+    )
+
+    register(
+        "qa:2WikiQAWithDocs",
+        "gem.envs.qa_env:HotpotQaEnv",
+        dataset_name="framolfese/2WikiMultihopQA",
+        split="train",
+        question_key="question",
+        documents_key="context",
+        answer_key="answer",
+        subset_key="default",
+    )   
+
     # Get default arguments and customize them
     args: Args = get_default_args(Args)
 

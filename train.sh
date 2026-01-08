@@ -3,12 +3,10 @@ export LD_LIBRARY_PATH=$(python -c "import sysconfig; print(sysconfig.get_config
 export NCCL_CUMEM_ENABLE=0
 export LP_DEBUG=1
 export LP_LOG_LEVEL=DEBUG
-#export CUDA_DEVICE_ORDER=PCI_BUS_ID
-#export CUDA_VISIBLE_DEVICES=0
 export NCCL_DEBUG=INFO
 
 N_GPUS=8
-GRADIENT_BATCH_SIZE=512
+GRADIENT_BATCH_SIZE=256
 RUN_NAME=gem-wikigame
 # Prevent deadlocks in triton caches by using a unique cache dir per run
 # This won't affect you unless you have multiple runs stored on the same machine.
@@ -41,7 +39,7 @@ python train.py \
     --gradient-checkpointing \
     --num_samples 1 \
     --rollout_batch_size $GRADIENT_BATCH_SIZE \
-    --num_env 8 \
+    --num_env 2 \
     --rollout_batch_size_per_device $((GRADIENT_BATCH_SIZE / N_GPUS)) \
     --pi_buffer_maxlen_per_device $((GRADIENT_BATCH_SIZE / N_GPUS)) \
     --pretrain Qwen/Qwen3-1.7B \
@@ -57,18 +55,18 @@ python train.py \
     --train_batch_size $GRADIENT_BATCH_SIZE \
     --train_batch_size_per_device 1 \
     --beta 0 \
-    --max_model_len 32000 \
+    --max_model_len 24000 \
     --generate_max_length 4096 \
     --temperature 1 \
     --top_p 1 \
-    --eval_steps 16 \
+    --eval_steps 8 \
     --save_steps 16 \
     --eval_temperature 0.6 \
     --eval_top_p 0.95 \
     --eval_generate_max_length 4096 \
-    --eval_games 64 \
+    --eval_games 32 \
     --eval_dump_game_states \
-    --eval_env_ids game:WikiGame-v0-hard game:Sudoku-v0-easy qa:HotpotQA \
+    --eval_env_ids qa:HotpotQA qa:HotpotQAWithDocs qa:2WikiQAWithDocs game:FifteenPuzzle-v0-easy \
     --max_train 65536 \
     --max_save_num 8 \
     --use-wb \
